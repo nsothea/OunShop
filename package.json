@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build": "cd client && npm install && npm run build"
+    "build": "npm install && npm rebuild sqlite3 --build-from-source && cd client && npm install && npm run build"
   },
   "dependencies": {
     "cors": "^2.8.6",

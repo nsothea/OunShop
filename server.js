@@ -160,6 +160,194 @@ app.get('/api/exchange-rate/cny', async (req, res) => {
   }
 });
 
+// ==================== TAOBAO / 1688 PRODUCT & COLOR EXTRACTOR ====================
+// Extract product images and color variants from Taobao/1688 link
+app.post('/api/taobao/extract', async (req, res) => {
+  const { url } = req.body;
+  if (!url || !url.trim()) {
+    return res.status(400).json({ error: 'សូមបញ្ចូល Link Taobao ឬ 1688!' });
+  }
+
+  const rawInput = url.trim();
+
+  // Extract clean URL from share text (e.g. "【淘宝】https://m.tb.cn/h.5xyz 标题...")
+  const urlMatch = rawInput.match(/https?:\/\/[^\s"'<>]+/i);
+  let targetUrl = urlMatch ? urlMatch[0] : rawInput;
+
+  // Extract Item ID
+  let itemId = null;
+  const idMatch = targetUrl.match(/[?&]id=(\d+)/i) || 
+                  targetUrl.match(/\/item\/(\d+)\.htm/i) || 
+                  targetUrl.match(/\/offer\/(\d+)\.html/i);
+  if (idMatch) {
+    itemId = idMatch[1];
+  }
+
+  // If mobile short link (tb.cn) and no itemId yet, follow redirect
+  if (!itemId && targetUrl.includes('tb.cn')) {
+    try {
+      const redRes = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(4000)
+      });
+      const finalUrl = redRes.url || '';
+      const subIdMatch = finalUrl.match(/[?&]id=(\d+)/i);
+      if (subIdMatch) {
+        itemId = subIdMatch[1];
+        targetUrl = finalUrl;
+      }
+    } catch (e) {}
+  }
+
+  // Extract Title from share text if available
+  let extractedTitle = '';
+  const titleBracketMatch = rawInput.match(/「([^」]+)」/);
+  const titleShareMatch = rawInput.match(/【[^】]+】\s*https?:\/\/[^\s]+\s*(.+)/);
+  if (titleBracketMatch) {
+    extractedTitle = titleBracketMatch[1].trim();
+  } else if (titleShareMatch && titleShareMatch[1]) {
+    extractedTitle = titleShareMatch[1].trim();
+  }
+
+  const images = [];
+  const seen = new Set();
+
+  function addImage(imgUrl, isPriority = false) {
+    if (!imgUrl) return;
+    let clean = imgUrl.trim();
+    if (clean.startsWith('//')) clean = 'https:' + clean;
+    if (!clean.startsWith('http')) return;
+
+    // Filter out common scripts, styles, icons, logos, banners
+    if (/\.(ico|svg|gif|js|css)$/i.test(clean)) return;
+    if (clean.includes('/tps/') || clean.includes('/tfs/') || clean.includes('-tps-')) return;
+
+    // Only keep real product photos from alicdn, tbcdn, 1688
+    if (!clean.includes('/imgextra/') && !clean.includes('/bao/uploaded/')) {
+      return;
+    }
+
+    if (!/\.(jpg|jpeg|png|webp)/i.test(clean)) return;
+
+    // Clean resize / thumbnail suffixes to get full HD image
+    let hd = clean.replace(/_\d+x\d+.*?\.(jpg|png|webp|jpeg)/i, '');
+    hd = hd.replace(/_\.webp/i, '');
+    hd = hd.replace(/_Q\d+\.jpg/i, '');
+
+    if (!seen.has(hd)) {
+      seen.add(hd);
+      if (isPriority) {
+        images.unshift(hd);
+      } else {
+        images.push(hd);
+      }
+    }
+  }
+
+  try {
+    const fetchUrls = [];
+    if (itemId) {
+      // world.taobao.com is unblocked and returns full product photos!
+      fetchUrls.push(`https://world.taobao.com/item/${itemId}.htm`);
+      fetchUrls.push(`https://detail.tmall.com/item.htm?id=${itemId}`);
+      fetchUrls.push(`https://item.taobao.com/item.htm?id=${itemId}`);
+    } else {
+      fetchUrls.push(targetUrl);
+    }
+
+    for (const fUrl of fetchUrls) {
+      try {
+        const response = await fetch(fUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+          },
+          signal: AbortSignal.timeout(6000)
+        });
+
+        const html = await response.text();
+
+        // Extract title from HTML if not yet extracted
+        if (!extractedTitle) {
+          const tMatch = html.match(/<title>([^<]+)<\/title>/i);
+          if (tMatch && !tMatch[1].includes('淘宝') && !tMatch[1].includes('登录') && !tMatch[1].includes('Login')) {
+            extractedTitle = tMatch[1].trim();
+          }
+        }
+
+        // Prioritize /bao/uploaded/ images (main product & SKU variants)
+        const baoImgs = html.match(/(?:https?:)?\/\/[^"'\s\)]+alicdn\.com\/bao\/uploaded\/[^"'\s\)\\]+/gi) || [];
+        for (const raw of baoImgs) {
+          addImage(raw, true);
+        }
+
+        // Other extra product images
+        const extraImgs = html.match(/(?:https?:)?\/\/[^"'\s\)]+alicdn\.com\/imgextra\/[^"'\s\)\\]+/gi) || [];
+        for (const raw of extraImgs) {
+          addImage(raw, false);
+        }
+
+        if (images.length > 0) break;
+      } catch (err) {}
+    }
+  } catch (err) {}
+
+  res.json({
+    success: true,
+    itemId,
+    title: extractedTitle,
+    url: targetUrl,
+    images: images.slice(0, 24)
+  });
+});
+
+// Download an external image URL to local uploads folder
+app.post('/api/taobao/save-image', async (req, res) => {
+  const { imageUrl } = req.body;
+  if (!imageUrl || !imageUrl.startsWith('http')) {
+    return res.status(400).json({ error: 'Image URL មិនត្រឹមត្រូវ!' });
+  }
+
+  try {
+    const response = await fetch(imageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://www.taobao.com/'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const ext = path.extname(imageUrl.split('?')[0]) || '.jpg';
+    const filename = `taobao-${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
+    const filePath = path.join(uploadsDir, filename);
+
+    fs.writeFileSync(filePath, buffer);
+
+    res.json({
+      success: true,
+      imageUrl: `/uploads/${filename}`,
+      originalUrl: imageUrl
+    });
+  } catch (err) {
+    console.error('Error saving image:', err.message);
+    // If saving locally fails, return original image URL so frontend still works
+    res.json({
+      success: true,
+      imageUrl: imageUrl,
+      warning: 'Used external CDN URL'
+    });
+  }
+});
+
 // ==================== AUTHENTICATION ROUTES ====================
 
 // Auth Middleware Helper
@@ -216,11 +404,28 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
-// Auth: Register (Sign Up)
+// Auth: Public Register is DISABLED (Only Admin can create users in Settings)
 app.post('/api/auth/register', (req, res) => {
-  const { name, username, password } = req.body;
+  return res.status(403).json({ 
+    error: 'ការចុះឈ្មោះជាសាធារណៈត្រូវបានបិទ។ មានតែ Admin ទេដែលអាចបង្កើតគណនីបានក្នុង Setting។' 
+  });
+});
+
+// Admin: Get all users
+app.get('/api/auth/users', authenticateUser, (req, res) => {
+  db.all(`SELECT id, username, name, role, created_at, updated_at FROM users ORDER BY id ASC`, [], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: 'បរាជ័យក្នុងការទាញយកបញ្ជីអ្នកប្រើប្រាស់' });
+    }
+    res.json({ success: true, users: rows || [] });
+  });
+});
+
+// Admin: Create new user account
+app.post('/api/auth/users', authenticateUser, (req, res) => {
+  const { name, username, password, role } = req.body;
   if (!username || !username.trim() || !password) {
-    return res.status(400).json({ error: 'សូមបញ្ចូល Username និងលេខសម្ងាត់!' });
+    return res.status(400).json({ error: 'សូមបញ្ចូលទាំង Username និងលេខសម្ងាត់!' });
   }
 
   const cleanUsername = username.trim();
@@ -232,39 +437,64 @@ app.post('/api/auth/register', (req, res) => {
     return res.status(400).json({ error: 'លេខសម្ងាត់ត្រូវមានយ៉ាងតិច ៤ តួអក្សរ!' });
   }
 
-  // Check if username exists
   db.get(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`, [cleanUsername], (err, existing) => {
     if (err) {
       return res.status(500).json({ error: 'មានបញ្ហាក្នុងការពិនិត្យគណនី' });
     }
     if (existing) {
-      return res.status(400).json({ error: 'Username នេះមានគេចុះឈ្មោះរួចហើយ សូមជ្រើសរើសឈ្មោះផ្សេង!' });
+      return res.status(400).json({ error: 'Username នេះមានគេប្រើរួចហើយ សូមជ្រើសរើសឈ្មោះផ្សេង!' });
     }
 
     const hashedPassword = db.hashPassword(password);
     const displayName = name && name.trim() ? name.trim() : cleanUsername;
-    const token = crypto.randomBytes(32).toString('hex');
+    const userRole = role === 'admin' ? 'admin' : 'staff';
 
     db.run(
-      `INSERT INTO users (username, password, name, role, token) VALUES (?, ?, ?, ?, ?)`,
-      [cleanUsername, hashedPassword, displayName, 'admin', token],
+      `INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)`,
+      [cleanUsername, hashedPassword, displayName, userRole],
       function (insErr) {
         if (insErr) {
-          return res.status(500).json({ error: 'បរាជ័យក្នុងការចុះឈ្មោះគណនី' });
+          return res.status(500).json({ error: 'បរាជ័យក្នុងការបង្កើតគណនី' });
         }
         res.status(201).json({
           success: true,
-          token,
           user: {
             id: this.lastID,
             username: cleanUsername,
             name: displayName,
-            role: 'admin'
+            role: userRole,
+            created_at: new Date().toISOString()
           },
-          message: 'បានចុះឈ្មោះគណនីថ្មីជោគជ័យ!'
+          message: 'បានបង្កើតគណនីអ្នកប្រើប្រាស់ថ្មីជោគជ័យ!'
         });
       }
     );
+  });
+});
+
+// Admin: Delete user account
+app.delete('/api/auth/users/:id', authenticateUser, (req, res) => {
+  const targetId = parseInt(req.params.id);
+  if (isNaN(targetId)) {
+    return res.status(400).json({ error: 'ID គណនីមិនត្រឹមត្រូវ' });
+  }
+
+  if (targetId === req.user.id) {
+    return res.status(400).json({ error: 'មិនអាចលុបគណនីដែលកំពុង Login នេះបានទេ!' });
+  }
+
+  if (targetId === 1) {
+    return res.status(400).json({ error: 'មិនអាចលុបគណនីមេ Admin (ID: 1) បានឡើយ!' });
+  }
+
+  db.run(`DELETE FROM users WHERE id = ?`, [targetId], function (err) {
+    if (err) {
+      return res.status(500).json({ error: 'បរាជ័យក្នុងការលុបគណនី' });
+    }
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'រកមិនឃើញគណនីនេះទេ' });
+    }
+    res.json({ success: true, message: 'បានលុបគណនីជោគជ័យ!' });
   });
 });
 
@@ -406,6 +636,58 @@ app.get('/api/orders', (req, res) => {
   });
 });
 
+// Helper to determine category prefix
+function getCategoryPrefix(category) {
+  if (!category) return 'ITM';
+  const c = category.toString().trim();
+  if (c.includes('ស្បែកជើង') || /shoes?/i.test(c)) return 'S';
+  if (c.includes('កាបូប') || /bags?/i.test(c)) return 'BAG';
+  if (c.includes('ខោអាវ') || c.includes('សម្លៀកបំពាក់') || /clothes?|clothing/i.test(c)) return 'C';
+  if (c.includes('គ្រឿងសំអាង') || c.includes('សម្រស់') || /cosmetics?/i.test(c)) return 'COS';
+  if (c.includes('គ្រឿងអេឡិចត្រូនិច') || /electronics?|gadgets?/i.test(c)) return 'E';
+  if (c.includes('សម្ភារៈផ្ទះបាយ') || c.includes('ប្រើប្រាស់') || /kitchen|home/i.test(c)) return 'KIT';
+  return 'ITM';
+}
+
+// Helper to calculate the next sequential item code for a prefix
+function getNextItemCode(prefix, callback) {
+  const cleanPrefix = (prefix || 'ITM').toUpperCase().trim();
+  db.all(`SELECT item_code FROM orders WHERE item_code LIKE ?`, [`${cleanPrefix}-%`], (err, rows) => {
+    if (err || !rows || rows.length === 0) {
+      return callback(null, `${cleanPrefix}-001`);
+    }
+    let maxNum = 0;
+    const regex = new RegExp(`^${cleanPrefix}-(\\d+)$`, 'i');
+    rows.forEach(r => {
+      if (r && r.item_code) {
+        const match = r.item_code.trim().match(regex);
+        if (match && match[1]) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxNum) {
+            maxNum = num;
+          }
+        }
+      }
+    });
+    const nextNum = maxNum + 1;
+    const formatted = `${cleanPrefix}-${String(nextNum).padStart(3, '0')}`;
+    callback(null, formatted);
+  });
+}
+
+// Endpoint to get next auto item code (MUST BE BEFORE /api/orders/:id)
+app.get('/api/orders/next-code', (req, res) => {
+  const category = req.query.category || '';
+  const customPrefix = req.query.prefix;
+  const prefix = (customPrefix || getCategoryPrefix(category)).toUpperCase().trim();
+  getNextItemCode(prefix, (err, nextCode) => {
+    if (err) {
+      return res.status(500).json({ error: 'បរាជ័យក្នុងការបង្កើតកូដទំនិញ' });
+    }
+    res.json({ prefix, nextCode });
+  });
+});
+
 // 3. Get Single Order
 app.get('/api/orders/:id', (req, res) => {
   db.get(`SELECT * FROM orders WHERE id = ?`, [req.params.id], (err, row) => {
@@ -427,72 +709,86 @@ app.post('/api/orders', (req, res) => {
   }
 
   const calc = calculateTotals(body);
+  const category = body.category || 'ទូទៅ';
+  const itemCode = body.item_code && body.item_code.trim() !== '' ? body.item_code.trim() : null;
 
-  const query = `
-    INSERT INTO orders (
-      item_name, category, image_url, taobao_link, taobao_order_id, china_tracking_number, facebook_post_link,
-      customer_name, customer_phone, customer_contact, customer_address,
-      cost_cny, exchange_rate, cost_usd, china_shipping, cambodia_shipping,
-      other_expenses, selling_price, deposit_amount, quantity,
-      total_cost, total_revenue, total_profit,
-      stock_status, delivery_status,
-      order_date, arrival_date, delivered_date,
-      tracking_number, shipping_company, notes
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?, ?,
-      ?, ?,
-      ?, ?, ?,
-      ?, ?, ?
-    )
-  `;
+  const insertWithCode = (codeToUse) => {
+    const query = `
+      INSERT INTO orders (
+        item_code, item_name, category, image_url, taobao_link, taobao_order_id, china_tracking_number, facebook_post_link,
+        customer_name, customer_phone, customer_contact, customer_address,
+        cost_cny, exchange_rate, cost_usd, china_shipping, cambodia_shipping,
+        other_expenses, selling_price, deposit_amount, quantity,
+        total_cost, total_revenue, total_profit,
+        stock_status, delivery_status,
+        order_date, arrival_date, delivered_date,
+        tracking_number, shipping_company, notes
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?,
+        ?, ?, ?,
+        ?, ?, ?
+      )
+    `;
 
-  const values = [
-    body.item_name.trim(),
-    body.category || 'ទូទៅ',
-    body.image_url || null,
-    body.taobao_link || null,
-    body.taobao_order_id || '',
-    body.china_tracking_number || '',
-    body.facebook_post_link || '',
-    body.customer_name || 'អតិថិជនទូទៅ',
-    body.customer_phone || '',
-    body.customer_contact || '',
-    body.customer_address || '',
-    calc.cost_cny,
-    calc.exchange_rate,
-    calc.cost_usd,
-    calc.china_shipping,
-    calc.cambodia_shipping,
-    calc.other_expenses,
-    calc.selling_price,
-    calc.deposit_amount,
-    calc.quantity,
-    calc.total_cost,
-    calc.total_revenue,
-    calc.total_profit,
-    body.stock_status || 'pre_order',
-    body.delivery_status || 'waiting',
-    body.order_date || new Date().toISOString().split('T')[0],
-    body.arrival_date || '',
-    body.delivered_date || '',
-    body.tracking_number || '',
-    body.shipping_company || '',
-    body.notes || ''
-  ];
+    const values = [
+      codeToUse,
+      body.item_name.trim(),
+      category,
+      body.image_url || null,
+      body.taobao_link || null,
+      body.taobao_order_id || '',
+      body.china_tracking_number || '',
+      body.facebook_post_link || '',
+      body.customer_name || 'អតិថិជនទូទៅ',
+      body.customer_phone || '',
+      body.customer_contact || '',
+      body.customer_address || '',
+      calc.cost_cny,
+      calc.exchange_rate,
+      calc.cost_usd,
+      calc.china_shipping,
+      calc.cambodia_shipping,
+      calc.other_expenses,
+      calc.selling_price,
+      calc.deposit_amount,
+      calc.quantity,
+      calc.total_cost,
+      calc.total_revenue,
+      calc.total_profit,
+      body.stock_status || 'pre_order',
+      body.delivery_status || 'waiting',
+      body.order_date || new Date().toISOString().split('T')[0],
+      body.arrival_date || '',
+      body.delivered_date || '',
+      body.tracking_number || '',
+      body.shipping_company || '',
+      body.notes || ''
+    ];
 
-  db.run(query, values, function(err) {
-    if (err) {
-      console.error('Insert error:', err.message);
-      return res.status(500).json({ error: 'បរាជ័យក្នុងការរក្សាទុកទិន្នន័យ' });
-    }
-    db.get(`SELECT * FROM orders WHERE id = ?`, [this.lastID], (err, newRow) => {
-      res.status(201).json(newRow);
+    db.run(query, values, function(err) {
+      if (err) {
+        console.error('Insert error:', err.message);
+        return res.status(500).json({ error: 'បរាជ័យក្នុងការរក្សាទុកទិន្នន័យ' });
+      }
+      db.get(`SELECT * FROM orders WHERE id = ?`, [this.lastID], (err, newRow) => {
+        res.status(201).json(newRow);
+      });
     });
-  });
+  };
+
+  if (!itemCode) {
+    const prefix = getCategoryPrefix(category);
+    getNextItemCode(prefix, (err, autoCode) => {
+      insertWithCode(autoCode || `${prefix}-001`);
+    });
+  } else {
+    insertWithCode(itemCode);
+  }
 });
 
 // 5. Update Order
@@ -508,7 +804,7 @@ app.put('/api/orders/:id', (req, res) => {
 
   const query = `
     UPDATE orders SET
-      item_name = ?, category = ?, image_url = ?, taobao_link = ?, taobao_order_id = ?, china_tracking_number = ?, facebook_post_link = ?,
+      item_code = ?, item_name = ?, category = ?, image_url = ?, taobao_link = ?, taobao_order_id = ?, china_tracking_number = ?, facebook_post_link = ?,
       customer_name = ?, customer_phone = ?, customer_contact = ?, customer_address = ?,
       cost_cny = ?, exchange_rate = ?, cost_usd = ?, china_shipping = ?, cambodia_shipping = ?,
       other_expenses = ?, selling_price = ?, deposit_amount = ?, quantity = ?,
@@ -521,6 +817,7 @@ app.put('/api/orders/:id', (req, res) => {
   `;
 
   const values = [
+    body.item_code ? body.item_code.trim() : null,
     body.item_name.trim(),
     body.category || 'ទូទៅ',
     body.image_url || null,

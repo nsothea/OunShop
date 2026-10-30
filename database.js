@@ -66,6 +66,7 @@ function initDb() {
     db.run(`
       CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_code TEXT,
         item_name TEXT NOT NULL,
         category TEXT DEFAULT 'ផ្សេងៗ',
         image_url TEXT,
@@ -106,6 +107,7 @@ function initDb() {
     addColumnSafe('taobao_order_id', 'TEXT');
     addColumnSafe('china_tracking_number', 'TEXT');
     addColumnSafe('facebook_post_link', 'TEXT');
+    addColumnSafe('item_code', 'TEXT');
 
     // Settings table
     db.run(`

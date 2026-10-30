@@ -3,7 +3,7 @@ services:
     name: ounshop
     env: node
     plan: free
-    buildCommand: npm run build
+    buildCommand: npm install && npm rebuild sqlite3 --build-from-source
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
