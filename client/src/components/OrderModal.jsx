@@ -9,7 +9,10 @@ import {
   Truck, 
   Calendar, 
   AlertCircle,
-  Zap
+  Zap,
+  Sparkles,
+  Palette,
+  Check
 } from 'lucide-react';
 
 export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defaultRate = 0.14 }) {
@@ -51,6 +54,11 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
   const [fetchingRate, setFetchingRate] = useState(false);
   const [error, setError] = useState('');
 
+  // Taobao Product & Color Extractor States
+  const [colorImages, setColorImages] = useState([]);
+  const [fetchingProduct, setFetchingProduct] = useState(false);
+  const [extractMessage, setExtractMessage] = useState('');
+
   // Fetch Live CNY Rate
   const handleFetchLiveRate = async () => {
     try {
@@ -86,6 +94,8 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
       setPreviewUrl('');
     }
     setSelectedFile(null);
+    setColorImages([]);
+    setExtractMessage('');
     setError('');
   }, [orderToEdit, isOpen, defaultRate]);
 
@@ -126,6 +136,93 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
       const objUrl = URL.createObjectURL(file);
       setPreviewUrl(objUrl);
     }
+  };
+
+  // Auto-Fetch Taobao Product Details, Images & Colors
+  const handleFetchTaobaoProduct = async (rawUrl) => {
+    const target = rawUrl || form.taobao_link;
+    if (!target || !target.trim()) return;
+
+    try {
+      setFetchingProduct(true);
+      setExtractMessage('');
+      setError('');
+
+      const res = await fetch('/api/taobao/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: target.trim() })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'បរាជ័យក្នុងការទាញយកព័ត៌មានពី Taobao');
+      }
+
+      if (data.images && data.images.length > 0) {
+        setColorImages(data.images);
+
+        // Auto-apply 1st picture if no image was manually uploaded
+        if (!selectedFile) {
+          setForm(prev => ({ ...prev, image_url: data.images[0] }));
+          setPreviewUrl(data.images[0]);
+        }
+
+        setExtractMessage(`បានទាញយករូបភាព និងពណ៌ចំនួន ${data.images.length} ជោគជ័យ!`);
+        setTimeout(() => setExtractMessage(''), 5000);
+      } else {
+        setExtractMessage('បានពិនិត្យ Link តែរកមិនឃើញរូបភាពស្វ័យប្រវត្តិទេ (អ្នកអាច Upload ឬ Paste រូបដោយផ្ទាល់បាន)');
+        setTimeout(() => setExtractMessage(''), 5000);
+      }
+
+      // Auto-fill product name if empty
+      if (!form.item_name && data.title) {
+        setForm(prev => ({ ...prev, item_name: data.title }));
+      }
+
+      // Clean up link if share text was pasted
+      if (data.url && data.url !== form.taobao_link) {
+        setForm(prev => ({ ...prev, taobao_link: data.url }));
+      }
+    } catch (err) {
+      console.warn('Taobao extract warning:', err);
+    } finally {
+      setFetchingProduct(false);
+    }
+  };
+
+  // Handle Taobao Link Change with Auto-Debounce Fetch
+  const handleTaobaoLinkChange = (val) => {
+    setForm(prev => ({ ...prev, taobao_link: val }));
+
+    if (val && (val.includes('taobao.com') || val.includes('tmall.com') || val.includes('1688.com') || val.includes('tb.cn'))) {
+      if (window._taobaoTimer) clearTimeout(window._taobaoTimer);
+      window._taobaoTimer = setTimeout(() => {
+        handleFetchTaobaoProduct(val);
+      }, 700);
+    }
+  };
+
+  // Handle Admin Selecting a Specific Color / Variant Image
+  const handleSelectColorImage = async (imgUrl) => {
+    setSelectedFile(null);
+    setForm(prev => ({ ...prev, image_url: imgUrl }));
+    setPreviewUrl(imgUrl);
+    setExtractMessage('បានជ្រើសរើសរូបភាពពណ៌នេះរួចរាល់!');
+    setTimeout(() => setExtractMessage(''), 3000);
+
+    // Save image to server uploads in background
+    try {
+      const res = await fetch('/api/taobao/save-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl: imgUrl })
+      });
+      const data = await res.json();
+      if (data.success && data.imageUrl) {
+        setForm(prev => ({ ...prev, image_url: data.imageUrl }));
+      }
+    } catch (e) {}
   };
 
   // Live calculations
@@ -299,7 +396,10 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center justify-between">
-                    <span>Link Taobao / 1688</span>
+                    <span className="flex items-center space-x-1">
+                      <span>Link Taobao / 1688</span>
+                      <span className="text-[10px] text-rose-500 font-normal">(Auto រូប & ពណ៌)</span>
+                    </span>
                     {form.taobao_link && (
                       <a 
                         href={form.taobao_link} 
@@ -312,18 +412,35 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
                       </a>
                     )}
                   </label>
-                  <div className="relative">
-                    <input
-                      type="url"
-                      placeholder="https://item.taobao.com/..."
-                      value={form.taobao_link}
-                      onChange={(e) => setForm(prev => ({ ...prev, taobao_link: e.target.value }))}
-                      className="w-full pl-3.5 pr-8 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden text-xs"
-                    />
-                    <div className="absolute right-2.5 top-2.5 text-slate-400">
-                      <ExternalLink className="w-3.5 h-3.5" />
+                  <div className="flex space-x-1.5">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        placeholder="Paste link https://item.taobao.com/..."
+                        value={form.taobao_link}
+                        onChange={(e) => handleTaobaoLinkChange(e.target.value)}
+                        className="w-full pl-3 pr-7 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden text-xs"
+                      />
+                      <div className="absolute right-2 top-2.5 text-slate-400">
+                        <ExternalLink className="w-3 h-3" />
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleFetchTaobaoProduct(form.taobao_link)}
+                      disabled={fetchingProduct || !form.taobao_link}
+                      className="px-2.5 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center space-x-1 shrink-0 cursor-pointer disabled:opacity-50"
+                      title="ទាញយករូបភាព និងពណ៌ពី Taobao"
+                    >
+                      <Sparkles className={`w-3.5 h-3.5 ${fetchingProduct ? 'animate-spin' : ''}`} />
+                      <span className="hidden sm:inline">{fetchingProduct ? 'កំពុងទាញ...' : 'ទាញយករូប'}</span>
+                    </button>
                   </div>
+                  {extractMessage && (
+                    <p className="text-[11px] text-rose-600 mt-1 font-medium animate-pulse">
+                      {extractMessage}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -413,6 +530,61 @@ export default function OrderModal({ isOpen, onClose, onSave, orderToEdit, defau
                 </div>
               </div>
             </div>
+
+            {/* Color & Variant Gallery (Auto Extracted from Taobao) */}
+            {colorImages.length > 0 && (
+              <div className="md:col-span-12 p-3.5 sm:p-4 bg-gradient-to-r from-rose-50/80 via-pink-50/60 to-amber-50/60 rounded-2xl border border-rose-200/90 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="p-1.5 bg-rose-500 text-white rounded-lg shadow-xs">
+                      <Palette className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <span className="text-xs font-bold text-slate-800">
+                        ជម្រើសពណ៌ និងរូបភាពពី Taobao ({colorImages.length} ជម្រើស)
+                      </span>
+                      <p className="text-[11px] text-slate-500">
+                        រូបដំបូងត្រូវបានដាក់ចូលស្វ័យប្រវត្តិ។ សូមចុចលើរូបខាងក្រោមដើម្បីប្តូរពណ៌ដែលភ្ញៀវកុម្មង់៖
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-bold text-rose-600 bg-white border border-rose-200 px-2.5 py-1 rounded-full shadow-xs">
+                    {colorImages.findIndex(img => img === (previewUrl || form.image_url)) >= 0 
+                      ? `✓ បានជ្រើសរើសរូបទី ${colorImages.findIndex(img => img === (previewUrl || form.image_url)) + 1}` 
+                      : 'ចុចលើរូបដើម្បីជ្រើសរើស'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2.5 p-1 max-h-48 overflow-y-auto">
+                  {colorImages.map((img, idx) => {
+                    const isSelected = form.image_url === img || previewUrl === img;
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSelectColorImage(img)}
+                        className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all cursor-pointer group ${
+                          isSelected 
+                            ? 'border-rose-500 ring-2 ring-rose-400 scale-95 shadow-md shadow-rose-200' 
+                            : 'border-white bg-white hover:border-rose-300 opacity-80 hover:opacity-100 hover:scale-105 shadow-xs'
+                        }`}
+                        title={`ជ្រើសរើសពណ៌ទី ${idx + 1}`}
+                      >
+                        <img src={img} alt={`Variant ${idx + 1}`} className="w-full h-full object-cover" />
+                        {isSelected && (
+                          <div className="absolute top-1 right-1 bg-rose-500 text-white rounded-full p-0.5 shadow-xs">
+                            <Check className="w-3 h-3" />
+                          </div>
+                        )}
+                        <span className="absolute bottom-0 inset-x-0 bg-slate-900/60 text-white text-[9px] py-0.5 text-center font-medium truncate">
+                          {idx === 0 ? 'រូបមេ' : `ពណ៌ ${idx}`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 2: Pricing & Shipping Breakdown */}

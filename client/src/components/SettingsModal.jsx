@@ -12,7 +12,12 @@ import {
   Lock, 
   User, 
   ShieldCheck,
-  Store
+  Store,
+  Users,
+  UserPlus,
+  Trash2,
+  Shield,
+  Clock
 } from 'lucide-react';
 
 export default function SettingsModal({ 
@@ -24,7 +29,7 @@ export default function SettingsModal({
   currentUser, 
   onUserUpdated 
 }) {
-  const [activeTab, setActiveTab] = useState('shop'); // 'shop' | 'security'
+  const [activeTab, setActiveTab] = useState('shop'); // 'shop' | 'security' | 'users'
 
   // Shop Settings Form
   const [form, setForm] = useState({
@@ -38,7 +43,7 @@ export default function SettingsModal({
     currency: '$'
   });
 
-  // Account Security Form
+  // Account Security Form (Current logged-in user profile update)
   const [securityForm, setSecurityForm] = useState({
     name: '',
     username: '',
@@ -46,6 +51,19 @@ export default function SettingsModal({
     newPassword: '',
     confirmPassword: ''
   });
+
+  // Admin User Management Form
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserUsername, setNewUserUsername] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('staff'); // 'staff' | 'admin'
+
+  const [usersList, setUsersList] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState(null);
+  const [usersError, setUsersError] = useState('');
+  const [usersSuccess, setUsersSuccess] = useState('');
 
   const [saving, setSaving] = useState(false);
   const [savingSecurity, setSavingSecurity] = useState(false);
@@ -81,6 +99,31 @@ export default function SettingsModal({
     setSecurityError('');
     setSecuritySuccess('');
   }, [currentUser, isOpen]);
+
+  // Fetch Users when modal opens or users tab selected
+  const fetchUsers = async () => {
+    if (!token) return;
+    try {
+      setLoadingUsers(true);
+      setUsersError('');
+      const res = await fetch('/api/auth/users', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'បរាជ័យក្នុងការទាញយកអ្នកប្រើប្រាស់');
+      setUsersList(data.users || []);
+    } catch (err) {
+      setUsersError(err.message || 'មានបញ្ហាក្នុងការទាញយកអ្នកប្រើប្រាស់');
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && (activeTab === 'users' || currentUser?.role === 'admin')) {
+      fetchUsers();
+    }
+  }, [isOpen, activeTab]);
 
   if (!isOpen) return null;
 
@@ -145,7 +188,7 @@ export default function SettingsModal({
       setSaving(true);
       await onSaveSettings(form);
       setSaving(false);
-      setMessage('បានរក្សាទុកការកំណត់ជោគជ័យ!');
+      setMessage('បានរក្សាទុកការកំណត់ហាងជោគជ័យ!');
       setTimeout(() => {
         setMessage('');
         onClose();
@@ -156,7 +199,7 @@ export default function SettingsModal({
     }
   };
 
-  // Submit Account & Security Change
+  // Submit Account & Security Change (Current User)
   const handleSubmitSecurity = async (e) => {
     e.preventDefault();
     setSecurityError('');
@@ -223,9 +266,102 @@ export default function SettingsModal({
     }
   };
 
+  // Admin: Create New User Account
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setUsersError('');
+    setUsersSuccess('');
+
+    if (!newUserUsername.trim() || !newUserPassword) {
+      setUsersError('សូមបញ្ចូលទាំង Username និងលេខសម្ងាត់!');
+      return;
+    }
+
+    if (newUserUsername.trim().length < 3) {
+      setUsersError('Username ត្រូវមានយ៉ាងតិច ៣ តួអក្សរ!');
+      return;
+    }
+
+    if (newUserPassword.length < 4) {
+      setUsersError('លេខសម្ងាត់ត្រូវមានយ៉ាងតិច ៤ តួអក្សរ!');
+      return;
+    }
+
+    try {
+      setCreatingUser(true);
+      const res = await fetch('/api/auth/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: newUserName.trim() || newUserUsername.trim(),
+          username: newUserUsername.trim(),
+          password: newUserPassword,
+          role: newUserRole
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'បរាជ័យក្នុងការបង្កើតគណនី');
+      }
+
+      setUsersSuccess(`បានបង្កើតគណនី "${data.user.username}" ជោគជ័យ!`);
+      setNewUserName('');
+      setNewUserUsername('');
+      setNewUserPassword('');
+      setNewUserRole('staff');
+      fetchUsers();
+
+      setTimeout(() => {
+        setUsersSuccess('');
+      }, 4000);
+    } catch (err) {
+      setUsersError(err.message || 'មានបញ្ហាក្នុងការបង្កើតគណនី');
+    } finally {
+      setCreatingUser(false);
+    }
+  };
+
+  // Admin: Delete User Account
+  const handleDeleteUser = async (userId, targetUsername) => {
+    if (!window.confirm(`តើអ្នកពិតជាចង់លុបគណនី "${targetUsername}" នេះមែនទេ?`)) {
+      return;
+    }
+
+    try {
+      setDeletingUserId(userId);
+      setUsersError('');
+      const res = await fetch(`/api/auth/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'បរាជ័យក្នុងការលុបគណនី');
+      }
+
+      setUsersSuccess(`បានលុបគណនី "${targetUsername}" ជោគជ័យ!`);
+      fetchUsers();
+
+      setTimeout(() => {
+        setUsersSuccess('');
+      }, 3000);
+    } catch (err) {
+      setUsersError(err.message || 'មានបញ្ហាក្នុងការលុបគណនី');
+    } finally {
+      setDeletingUserId(null);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="relative bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-100 max-h-[90vh] flex flex-col font-sans">
+      <div className="relative bg-white rounded-3xl max-w-xl w-full shadow-2xl overflow-hidden border border-slate-100 max-h-[92vh] flex flex-col font-sans">
         
         {/* Header */}
         <div className="px-6 py-4 bg-slate-900 text-white shrink-0 space-y-3">
@@ -236,22 +372,22 @@ export default function SettingsModal({
               </span>
               <div>
                 <h2 className="text-base font-bold">ការកំណត់ប្រព័ន្ធ (Settings)</h2>
-                <p className="text-xs text-slate-300">ព័ត៌មានហាង, Logo, Facebook និងលេខសម្ងាត់</p>
+                <p className="text-xs text-slate-300">ព័ត៌មានហាង, លេខសម្ងាត់ និងការគ្រប់គ្រងគណនី</p>
               </div>
             </div>
             <button 
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-white rounded-full transition"
+              className="p-1.5 text-slate-400 hover:text-white rounded-full transition cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           {/* Navigation Tabs */}
-          <div className="flex space-x-2 border-t border-slate-800 pt-2.5">
+          <div className="flex space-x-1.5 border-t border-slate-800 pt-2.5 overflow-x-auto pb-0.5">
             <button
               onClick={() => setActiveTab('shop')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shrink-0 cursor-pointer ${
                 activeTab === 'shop'
                   ? 'bg-rose-500 text-white shadow-xs'
                   : 'text-slate-300 hover:bg-slate-800'
@@ -263,14 +399,31 @@ export default function SettingsModal({
 
             <button
               onClick={() => setActiveTab('security')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shrink-0 cursor-pointer ${
                 activeTab === 'security'
                   ? 'bg-rose-500 text-white shadow-xs'
                   : 'text-slate-300 hover:bg-slate-800'
               }`}
             >
               <Lock className="w-3.5 h-3.5" />
-              <span>Username & លេខសម្ងាត់</span>
+              <span>គណនីរបស់ខ្ញុំ</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('users')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shrink-0 cursor-pointer ${
+                activeTab === 'users'
+                  ? 'bg-rose-500 text-white shadow-xs'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>គ្រប់គ្រង User / បង្កើតគណនី</span>
+              {usersList.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 bg-white/20 text-white text-[10px] rounded-full">
+                  {usersList.length}
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -320,149 +473,94 @@ export default function SettingsModal({
               <label className="block text-xs font-semibold text-slate-700 mb-1">ឈ្មោះហាង (Shop Name)</label>
               <input
                 type="text"
+                required
                 value={form.shop_name}
                 onChange={(e) => setForm(prev => ({ ...prev, shop_name: e.target.value }))}
-                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                className="w-full text-xs sm:text-sm px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden font-bold"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center justify-between">
-                <span className="flex items-center space-x-1 text-blue-600 font-bold">
-                  <span>Link ទៅកាន់ Facebook Page</span>
-                </span>
-                {form.facebook_url && (
-                  <a 
-                    href={form.facebook_url} 
-                    target="_blank" 
-                    rel="noreferrer" 
-                    className="text-blue-600 hover:underline flex items-center space-x-1 text-[11px]"
-                  >
-                    <span>សាកល្បងបើក Page</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-              </label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Link ផេក Facebook (សម្រាប់បោះពុម្ពវិក្កយបត្រ)</label>
               <input
-                type="url"
-                placeholder="https://facebook.com/YourShopName ឬ https://m.me/YourShopName"
+                type="text"
+                placeholder="https://facebook.com/your-shop-page"
                 value={form.facebook_url}
                 onChange={(e) => setForm(prev => ({ ...prev, facebook_url: e.target.value }))}
-                className="w-full px-3 py-2 border border-blue-200 bg-blue-50/20 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-blue-500 focus:outline-hidden font-medium"
+                className="w-full text-xs sm:text-sm px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden text-blue-600"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            {/* Exchange Rate Setup */}
+            <div className="p-3.5 bg-amber-50/60 rounded-2xl border border-amber-200/60 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-amber-900">អត្រាប្តូរប្រាក់ យ៉ន់ (CNY Rate)</h4>
+                  <p className="text-[11px] text-amber-700">រូបមន្តស្ដង់ដារ: 1 $ = {form.cny_rate || '6.68'} ¥ ({form.cny_rate || '6.68'} ¥ = 1 $)</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleFetchLiveRate}
+                  disabled={fetchingRate}
+                  className="px-2.5 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 rounded-xl text-xs font-bold text-amber-900 shadow-xs flex items-center space-x-1 transition cursor-pointer"
+                >
+                  <Zap className={`w-3.5 h-3.5 text-amber-600 ${fetchingRate ? 'animate-spin' : ''}`} />
+                  <span>{fetchingRate ? 'កំពុងទាញយក...' : 'ទាញយកតម្លៃទីផ្សារ Live'}</span>
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  ចំនួន យ៉ន់ ក្នុង 1 ដុល្លារ (¥ / 1 USD)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={form.cny_rate}
+                  onChange={(e) => setForm(prev => ({ ...prev, cny_rate: e.target.value }))}
+                  className="w-full text-xs sm:text-sm px-3 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden font-bold"
+                />
+              </div>
+            </div>
+
+            {/* Contacts & Address */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">លេខទូរស័ព្ទហាង</label>
                 <input
                   type="text"
+                  placeholder="012 345 678"
                   value={form.shop_phone}
                   onChange={(e) => setForm(prev => ({ ...prev, shop_phone: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                  className="w-full text-xs sm:text-sm px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
                 />
               </div>
+
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Telegram Contact</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Telegram ហាង</label>
                 <input
                   type="text"
+                  placeholder="@yourshop"
                   value={form.shop_telegram}
                   onChange={(e) => setForm(prev => ({ ...prev, shop_telegram: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                  className="w-full text-xs sm:text-sm px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
                 />
               </div>
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">អាសយដ្ឋានហាង</label>
-              <input
-                type="text"
+              <textarea
+                rows={2}
+                placeholder="រាជធានីភ្នំពេញ"
                 value={form.shop_address}
                 onChange={(e) => setForm(prev => ({ ...prev, shop_address: e.target.value }))}
-                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                className="w-full text-xs sm:text-sm px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
               />
             </div>
 
-            {/* Currency Rate Box */}
-            <div className="p-3.5 bg-rose-50/50 rounded-2xl border border-rose-200/80 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-bold text-rose-800 uppercase tracking-wider">
-                    អត្រាប្តូរប្រាក់ចិន ¥ ទៅ ដុល្លារ $
-                  </label>
-                  <p className="text-[11px] text-slate-500">គណនាថ្លៃដើមទំនិញ Taobao ទៅជាប្រាក់ដុល្លារ</p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleFetchLiveRate}
-                  disabled={fetchingRate}
-                  className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
-                >
-                  <Zap className="w-3.5 h-3.5 fill-current" />
-                  <span>{fetchingRate ? 'កំពុងស្វែងរក...' : 'ទាញយក Live Rate'}</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                    1 $ ស្មើនឹង (... ¥)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-2 text-rose-500 text-xs font-bold">¥</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="6.68"
-                      value={form.cny_rate}
-                      onChange={(e) => setForm(prev => ({ ...prev, cny_rate: e.target.value }))}
-                      className="w-full pl-6 pr-3 py-1.5 border border-rose-300 bg-white rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                    />
-                  </div>
-                  <span className="text-[10px] text-slate-500 mt-1 block">
-                    {parseFloat(form.cny_rate) >= 1 ? (
-                      <>
-                        <strong>{form.cny_rate} ¥ = 1 $</strong> (100 ¥ ≈ ${(100 / parseFloat(form.cny_rate)).toFixed(2)})
-                      </>
-                    ) : (
-                      <>
-                        <strong>1 ¥ = ${form.cny_rate}</strong> (100 ¥ = ${(100 * parseFloat(form.cny_rate)).toFixed(2)})
-                      </>
-                    )}
-                  </span>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">រូបិយប័ណ្ណលក់ចេញ</label>
-                  <input
-                    type="text"
-                    value={form.currency}
-                    onChange={(e) => setForm(prev => ({ ...prev, currency: e.target.value }))}
-                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-xl text-xs font-medium focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                  />
-                  <span className="text-[10px] text-slate-400 mt-1 block">
-                    {parseFloat(form.cny_rate) >= 1 ? (
-                      <span>1 ¥ ≈ ${(1 / parseFloat(form.cny_rate)).toFixed(4)}</span>
-                    ) : (
-                      <span>1 $ ≈ {(1 / parseFloat(form.cny_rate)).toFixed(2)} ¥</span>
-                    )}
-                  </span>
-                </div>
-              </div>
-
-              {liveRateInfo && (
-                <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 flex items-center justify-between">
-                  <span>អត្រាទីផ្សារ: <strong>1 $ = {liveRateInfo.usd_to_cny} ¥ ({liveRateInfo.usd_to_cny} ¥ = 1 $)</strong></span>
-                  <span className="font-bold flex items-center space-x-0.5 text-emerald-600">
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Live</span>
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 pt-4 border-t border-slate-100 shrink-0">
+            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100 shrink-0">
               <button
                 type="button"
                 onClick={onClose}
@@ -473,31 +571,24 @@ export default function SettingsModal({
               <button
                 type="submit"
                 disabled={saving}
-                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-200 transition flex items-center space-x-1.5 cursor-pointer"
+                className="px-5 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-200 transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>{saving ? 'រក្សាទុក...' : 'រក្សាទុកព័ត៌មានហាង'}</span>
+                <span>{saving ? 'កំពុងរក្សាទុក...' : 'រក្សាទុកការកំណត់'}</span>
               </button>
             </div>
           </form>
         )}
 
-        {/* Tab 2: Account & Password Security Settings */}
+        {/* Tab 2: My Account & Password Change */}
         {activeTab === 'security' && (
           <form onSubmit={handleSubmitSecurity} className="p-6 space-y-4 overflow-y-auto flex-1">
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center space-x-3">
-              <div className="p-2.5 bg-rose-100 text-rose-600 rounded-xl">
-                <ShieldCheck className="w-6 h-6" />
+            {securitySuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl flex items-center space-x-2">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{securitySuccess}</span>
               </div>
-              <div>
-                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  សុវត្ថិភាពគណនី (Account & Password)
-                </h3>
-                <p className="text-[11px] text-slate-500">
-                  ផ្លាស់ប្តូរ Username និងលេខសម្ងាត់ដើម្បីការពារទិន្នន័យហាងរបស់អ្នក
-                </p>
-              </div>
-            </div>
+            )}
 
             {securityError && (
               <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center space-x-2">
@@ -506,17 +597,20 @@ export default function SettingsModal({
               </div>
             )}
 
-            {securitySuccess && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl flex items-center space-x-2">
-                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>{securitySuccess}</span>
+            <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500 text-white flex items-center justify-center font-bold text-sm">
+                {currentUser?.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
               </div>
-            )}
+              <div>
+                <h4 className="text-xs font-bold text-slate-800">{currentUser?.name || 'User'}</h4>
+                <p className="text-[11px] text-slate-400">@{currentUser?.username || 'user'} • តួនាទី: <span className="font-semibold text-rose-600">{currentUser?.role === 'admin' ? 'Admin (អ្នកគ្រប់គ្រង)' : 'Staff (បុគ្គលិក)'}</span></p>
+              </div>
+            </div>
 
-            {/* Name */}
+            {/* Display Name */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                ឈ្មោះអ្នកគ្រប់គ្រង (Display Name)
+                ឈ្មោះបង្ហាញ (Display Name)
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -525,7 +619,6 @@ export default function SettingsModal({
                 <input
                   type="text"
                   required
-                  placeholder="ឧ. Admin (Oun Shop)"
                   value={securityForm.name}
                   onChange={(e) => setSecurityForm(prev => ({ ...prev, name: e.target.value }))}
                   className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
@@ -536,7 +629,7 @@ export default function SettingsModal({
             {/* Username */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Username សម្រាប់ Login <span className="text-rose-500">*</span>
+                Username ចូលប្រើ
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -545,15 +638,11 @@ export default function SettingsModal({
                 <input
                   type="text"
                   required
-                  placeholder="admin"
                   value={securityForm.username}
                   onChange={(e) => setSecurityForm(prev => ({ ...prev, username: e.target.value }))}
                   className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 focus:outline-hidden font-mono"
                 />
               </div>
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                ឈ្មោះនេះសម្រាប់ប្រើពេល Log in ចូលប្រព័ន្ធ
-              </span>
             </div>
 
             {/* Current Password */}
@@ -629,10 +718,221 @@ export default function SettingsModal({
                 className="px-5 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-200 transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>{savingSecurity ? 'កំពុងផ្លាស់ប្តូរ...' : 'ផ្លាស់ប្តូរ Username & លេខសម្ងាត់'}</span>
+                <span>{savingSecurity ? 'កំពុងផ្លាស់ប្តូរ...' : 'ផ្លាស់ប្តូរគណនីខ្ញុំ'}</span>
               </button>
             </div>
           </form>
+        )}
+
+        {/* Tab 3: Admin User Management & Create Account */}
+        {activeTab === 'users' && (
+          <div className="p-6 space-y-5 overflow-y-auto flex-1">
+            {/* Header info */}
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 flex items-center space-x-1.5">
+                  <Users className="w-4 h-4 text-rose-500" />
+                  <span>គ្រប់គ្រងគណនីបុគ្គលិក និងអ្នកប្រើប្រាស់</span>
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  មានតែ Admin ទេដែលអាចបង្កើតគណនី និងគ្រប់គ្រងអ្នកប្រើប្រាស់បាន
+                </p>
+              </div>
+            </div>
+
+            {/* Alert Messages */}
+            {usersSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl flex items-center space-x-2">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{usersSuccess}</span>
+              </div>
+            )}
+
+            {usersError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{usersError}</span>
+              </div>
+            )}
+
+            {/* Form: Create New User */}
+            <form onSubmit={handleCreateUser} className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-3">
+              <h4 className="text-xs font-bold text-slate-800 flex items-center space-x-1.5">
+                <UserPlus className="w-3.5 h-3.5 text-rose-500" />
+                <span>បង្កើតគណនីថ្មី (Create New User)</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Full Name */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    ឈ្មោះបុគ្គលិក / អ្នកប្រើ (Name)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ឧ. បង ស្រីនិច"
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                  />
+                </div>
+
+                {/* Username */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Username ចូលប្រើ <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ឧ. sreynich (អក្សរឡាតាំង)"
+                    value={newUserUsername}
+                    onChange={(e) => setNewUserUsername(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-medium focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                  />
+                </div>
+
+                {/* Password */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    លេខសម្ងាត់ (Password) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="យ៉ាងតិច ៤ តួអក្សរ"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-medium focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                  />
+                </div>
+
+                {/* Role */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    តួនាទី (Role)
+                  </label>
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-rose-500 focus:outline-hidden cursor-pointer"
+                  >
+                    <option value="staff">បុគ្គលិក (Staff) - លក់ & កុម្មង់ទូទៅ</option>
+                    <option value="admin">អ្នកគ្រប់គ្រង (Admin) - សិទ្ធិពេញលេញ</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="submit"
+                  disabled={creatingUser}
+                  className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>{creatingUser ? 'កំពុងបង្កើត...' : 'បង្កើតគណនីថ្មី'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Users List */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-slate-800">
+                  បញ្ជីគណនីទាំងអស់ក្នុងប្រព័ន្ធ ({usersList.length})
+                </h4>
+                <button
+                  type="button"
+                  onClick={fetchUsers}
+                  className="text-[11px] text-rose-600 hover:underline cursor-pointer"
+                >
+                  Refresh បញ្ជី
+                </button>
+              </div>
+
+              {loadingUsers ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  កំពុងទាញយកបញ្ជីគណនី...
+                </div>
+              ) : usersList.length === 0 ? (
+                <div className="py-6 text-center text-xs text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  មិនទាន់មានគណនីផ្សេងទៀតនៅឡើយទេ
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-200/80 rounded-2xl overflow-hidden bg-white">
+                  {usersList.map((u) => {
+                    const isSelf = currentUser && currentUser.id === u.id;
+                    const isPrimaryAdmin = u.id === 1;
+
+                    return (
+                      <div key={u.id} className="p-3 flex items-center justify-between hover:bg-slate-50/80 transition">
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs ${
+                            u.role === 'admin' 
+                              ? 'bg-rose-100 text-rose-700' 
+                              : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {u.name ? u.name.charAt(0).toUpperCase() : 'U'}
+                          </div>
+
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <span className="text-xs font-bold text-slate-800">{u.name}</span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                                u.role === 'admin'
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                  : 'bg-blue-50 text-blue-600 border border-blue-200'
+                              }`}>
+                                {u.role === 'admin' ? 'Admin' : 'Staff'}
+                              </span>
+                              {isSelf && (
+                                <span className="text-[10px] bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded-md border border-emerald-200 font-medium">
+                                  អ្នកផ្ទាល់ (You)
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-400 font-mono">
+                              @{u.username}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex items-center space-x-2">
+                          {isSelf || isPrimaryAdmin ? (
+                            <span className="text-[10px] text-slate-400 italic px-2">
+                              {isPrimaryAdmin ? 'មេ Admin' : 'កំពុង Login'}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUser(u.id, u.username)}
+                              disabled={deletingUserId === u.id}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                              title="លុបគណនីនេះ"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
+              >
+                បិទផ្ទាំង
+              </button>
+            </div>
+          </div>
         )}
 
       </div>
