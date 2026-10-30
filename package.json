@@ -1,0 +1,19 @@
+{
+  "name": "oun-shop-system",
+  "version": "1.0.0",
+  "description": "Oun Shop Online Management System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "cd client && npm install && npm run build"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "multer": "^2.5.0",
+    "sqlite3": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
